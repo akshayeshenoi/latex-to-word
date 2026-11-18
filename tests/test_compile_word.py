@@ -53,6 +53,15 @@ class SourceTests(unittest.TestCase):
             path.write_text(source)
             self.assertEqual(c.preprocess(c.expand_source(path, {})), source)
 
+    def test_affiliations_preserve_nested_content_and_verbatim(self):
+        literal = r"\begin{verbatim}\institute{Literal}\end{verbatim}"
+        source, affiliations = c.extract_affiliations(
+            r"\institute{Old}\institute{\textbf{First {Institute}} \and Second\email{a@example.org}}" + literal)
+        self.assertEqual(source, literal)
+        self.assertEqual(affiliations,
+                         "\\textsuperscript{1} \\textbf{First {Institute}}\n\n"
+                         "\\textsuperscript{2} Second\\email{a@example.org}")
+
     def test_nested_inputs_comments_and_cycles(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -205,6 +214,46 @@ second line
             with self.assertRaisesRegex(c.BuildError, "invalid DOCX"):
                 c.compile_document(self.args)
         self.assertEqual(self.output.read_bytes(), b"previous successful output")
+
+    def test_llncs_author_details_in_word(self):
+        authors = r"""% \author{Commented Author}\institute{Commented Institute}
+\author{Akshaye Shenoi\orcidID{0000-0002-7076-4255}\inst{1,2}, MSc \and
+Jacqueline L. Mair\orcidID{0000-0002-1466-8680}\inst{1,2}, PhD\thanks{Corresponding \textbf{author}.}}
+\authorrunning{A. Shenoi et al.}
+\institute{Future Health Technologies Programme, Singapore-ETH Centre \and
+Center for Digital Health Interventions, ETH Zurich}
+"""
+        original = self.source.read_text().replace(r"\documentclass{article}", r"\documentclass{llncs}")
+        # LLNCS declarations can appear in the preamble or after begin{document}.
+        for in_body in (False, True):
+            with self.subTest(in_body=in_body):
+                source = original.replace(r"\author{Anonymous Authors}", "" if in_body else authors)
+                if in_body:
+                    source = source.replace(r"\maketitle", authors + r"\maketitle")
+                self.source.write_text(source)
+                self.build()
+                with ZipFile(self.output) as z:
+                    doc = c.parse(z.read("word/document.xml"))
+                    notes = c.parse(z.read("word/footnotes.xml"))
+                    rels = c.parse(z.read("word/_rels/document.xml.rels"))
+                paragraphs = ["".join(p.xpath(".//w:t/text()", namespaces=c.NS))
+                              for p in doc.findall("w:body/w:p", c.NS)]
+                # The article-type heading follows the title, before author details.
+                self.assertEqual(paragraphs.pop(1), "Original Paper")
+                self.assertIn("Akshaye Shenoi (ORCID: 0000-0002-7076-4255)1,2, MSc", paragraphs[1])
+                self.assertIn("Jacqueline L. Mair (ORCID: 0000-0002-1466-8680)1,2, PhD", paragraphs[2])
+                self.assertEqual(paragraphs[3], "1 Future Health Technologies Programme, Singapore-ETH Centre")
+                self.assertEqual(paragraphs[4], "2 Center for Digital Health Interventions, ETH Zurich")
+                self.assertEqual(paragraphs[5], "Abstract")
+                self.assertNotIn("Commented", "".join(paragraphs))
+                self.assertNotIn("A. Shenoi et al.", "".join(paragraphs))
+                self.assertIn("Corresponding author.", "".join(notes.xpath(".//w:t/text()", namespaces=c.NS)))
+                self.assertTrue(doc.findall(".//w:footnoteReference", c.NS))
+                superscripts = doc.xpath(".//w:r[w:rPr/w:vertAlign[@w:val='superscript']]/w:t/text()", namespaces=c.NS)
+                self.assertEqual(superscripts, ["1,2", "1,2", "1", "2"])
+                targets = {r.get("Target") for r in rels}
+                self.assertIn("https://orcid.org/0000-0002-7076-4255", targets)
+                self.assertIn("https://orcid.org/0000-0002-1466-8680", targets)
 
     def test_check_writes_nothing(self):
         self.args.check = True

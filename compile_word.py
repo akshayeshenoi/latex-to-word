@@ -153,6 +153,43 @@ def strip_comments(s):
     return re.sub(r"(?<!\\)(?:\\\\)*%[^\n]*", lambda m: m[0][:m[0].index('%')], s)
 
 
+def replace_tex_argument(s, command, convert):
+    """Replace a command with one braced argument, retaining nested TeX."""
+    pattern = re.compile(r"\\" + command + r"(?![A-Za-z])\s*\{")
+    out, pos = [], 0
+    while match := pattern.search(s, pos):
+        value, end = balanced(s, match.end() - 1)
+        out.extend([s[pos:match.start()], convert(value)])
+        pos = end
+    return "".join(out) + s[pos:]
+
+
+def extract_affiliations(s):
+    """Keep LLNCS institutions separately so Pandoc cannot discard them."""
+    declarations = []
+    def extract(value):
+        declarations.append(value)
+        return ""
+    s = outside_verbatim(s, lambda part: replace_tex_argument(part, "institute", extract))
+    if not declarations:
+        return s, ""
+    # Like TeX, use the last declaration; split only top-level \\and commands.
+    value = declarations[-1]
+    affiliations, depth, start = [], 0, 0
+    for match in re.finditer(r"\\[A-Za-z]+|\\.|[{}]", value):
+        token = match[0]
+        if token == "{":
+            depth += 1
+        elif token == "}":
+            depth -= 1
+        elif token == r"\and" and depth == 0:
+            affiliations.append(value[start:match.start()].strip())
+            start = match.end()
+    affiliations.append(value[start:].strip())
+    return s, "\n\n".join(r"\textsuperscript{" + str(i) + "} " + affiliation
+                           for i, affiliation in enumerate(affiliations, 1))
+
+
 def expand_source(path, tracked, stack=(), root=None):
     path = path.resolve()
     root = root or path.parent
@@ -177,6 +214,11 @@ def expand_source(path, tracked, stack=(), root=None):
 def preprocess(s):
     """Ignore layout wrappers, retaining their complete content."""
     def convert(part):
+        def author(value):
+            value = replace_tex_argument(value, "inst", lambda ids: r"\textsuperscript{" + ids + "}")
+            return replace_tex_argument(value, "orcidID", lambda oid:
+                r" (\href{https://orcid.org/" + oid.strip() + "}{ORCID: " + oid.strip() + "})")
+        part = replace_tex_argument(part, "author", lambda value: r"\author{" + author(value) + "}")
         # These commands affect TeX layout only; don't discard their arguments.
         pattern = r"\\(?:makebox|mbox|fbox|framebox|resizebox|scalebox)(?![A-Za-z])"
         while match := re.search(pattern, part):
@@ -292,8 +334,10 @@ def transform_ast(ast):
     front = []
     if "title" in meta:
         front.append({"t": "Header", "c": [1, ["manuscript-title", ["unnumbered"], []], meta["title"]["c"]]})
+        front.append(header("Original Paper", identifier="article-type"))
     for author in meta.get("author", {"c": []})["c"]:
         front.append({"t": "Para", "c": author["c"]})
+    front.extend(meta.get("author-affiliations", {"c": []})["c"])
     if "abstract" in meta:
         front.extend([header("Abstract", identifier="abstract"), *meta["abstract"]["c"]])
     # Flatten LLNCS credits without changing the declaration text.
@@ -498,6 +542,10 @@ def finish_docx(path, template):
     for name, data in template["parts"].items():
         if name.startswith("word/theme/"):
             parts[name] = data
+    # Keep the author/affiliation page separate from the abstract.
+    for paragraph in doc.xpath(".//w:p[.//w:bookmarkStart[@w:name='abstract']] | "
+                               ".//w:bookmarkStart[@w:name='abstract']/following-sibling::w:p[1]", namespaces=NS):
+        child(child(paragraph, "pPr"), "pageBreakBefore", val="1")
     # Body paragraphs in the target use Normal directly, not Pandoc's extra spacing styles.
     for style in doc.findall(".//w:pPr/w:pStyle", NS):
         if style.get(q("val")) in ("BodyText", "FirstParagraph", "Compact", "Author"):
@@ -699,8 +747,13 @@ def compile_document(args):
     bib_path = source.parent / "references.bib"
     if bib_path.is_file():
         tracked[bib_path] = digest(bib_path)
-    latex = preprocess(expand_source(source, tracked))
+    latex, affiliations = extract_affiliations(expand_source(source, tracked))
+    latex = preprocess(latex)
     ast = json.loads(run_pandoc(str(binary), ["-f", "latex", "-t", "json"], data=latex, cwd=source.parent))
+    if affiliations:
+        affiliation_ast = json.loads(run_pandoc(str(binary), ["-f", "latex", "-t", "json"],
+                                               data=preprocess(affiliations), cwd=source.parent))
+        ast["meta"]["author-affiliations"] = {"t": "MetaBlocks", "c": affiliation_ast["blocks"]}
     transform_ast(ast)
     ignored = check_ast(ast)
     assets = collect_assets(ast, source.parent, tracked)

@@ -58,7 +58,9 @@ The bundled template is a blank, generic reference file containing only styles, 
 
 LaTeX is the content source. Author names, keywords, declarations, placeholders, and section order come from LaTeX. Word-only additions are not copied. The full appendix follows the references in the same document.
 
-The compiler retains the template's styles, theme, page size and margins. It maps title/sections to the template's heading hierarchy, keeps source tables editable, applies the reference table style to source-derived column widths, and fits figures to the text width. PDF figures are rendered at 600 dpi in temporary build files; original assets are untouched. Mathematics becomes editable Word equations. Table and figure references remain internal hyperlinks.
+LLNCS author declarations retain the declared author order and degrees, superscript affiliation numbers (`\inst`), clickable ORCID IDs (`\orcidID`), and author footnotes (`\thanks`). Institutions from `\institute`, separated by `\and`, appear as numbered affiliations below the authors. The abstract starts on a new page after the author and affiliation list. Commented sample authors and abbreviated running-head names are not included.
+
+The compiler retains the template's styles, theme, page size and margins. It places “Original Paper” directly below the title using Heading 2. It maps title/sections to the template's heading hierarchy, keeps source tables editable, applies the reference table style to source-derived column widths, and fits figures to the text width. PDF figures are rendered at 600 dpi in temporary build files; original assets are untouched. Mathematics becomes editable Word equations. Table and figure references remain internal hyperlinks.
 
 Layout-only LaTeX commands are ignored. In particular, boxes such as `\makebox` and `\resizebox` are unwrapped while preserving their contents. This is a compiler for this manuscript's LaTeX conventions, not a complete TeX engine. Unsupported content-bearing commands fail visibly rather than disappearing. Page breaks can differ from the reference document as text changes.
 
